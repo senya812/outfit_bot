@@ -1,4 +1,4 @@
-import asyncio, os
+import asyncio, os, re
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -10,7 +10,9 @@ import database as db
 load_dotenv()
 tok = os.getenv("BOT_TOKEN")
 adm = int(os.getenv("ADMIN_ID"))
+
 bot = Bot(token=tok)
+
 dp = Dispatcher()
 
 class AdminStates(StatesGroup):
@@ -28,7 +30,8 @@ def get_main_menu_kb():
     cats = db.get_categories()
     btn = []
     for c_id, c_name in cats:
-        b = InlineKeyboardButton(text=f"👕 {c_name}", callback_data=f"cat_{c_id}")
+        # Убран смайлик футболки, категории выводятся чистым текстом
+        b = InlineKeyboardButton(text=f"{c_name}", callback_data=f"cat_{c_id}")
         btn.append([b])
     btn.append([InlineKeyboardButton(text="🛒 Мой Outfit (Корзина)", callback_data="view_cart")])
     return InlineKeyboardMarkup(inline_keyboard=btn)
@@ -59,34 +62,77 @@ async def cmd_start(m: Message):
 @dp.callback_query(F.data == "empty")
 async def empty_cb(c: CallbackQuery):
     await c.answer("Магазин пуст!", show_alert=True)
-
 @dp.callback_query(F.data.startswith("cat_"))
 async def show_cat(c: CallbackQuery):
     c_id = int(c.data.split("_")[1])
     prods = db.get_products_by_category(c_id)
     c_name = db.get_category_name(c_id)
-    await c.message.delete()
+    
+    try: await c.message.delete()
+    except: pass
+    
     if not prods:
-        b = InlineKeyboardButton(text="↩️ Назад", callback_data="back_c")
-        kb = InlineKeyboardMarkup(inline_keyboard=[[b]])
-        await c.message.answer(f"📦 В категории *{c_name}* пока ничего нет.", parse_mode="Markdown", reply_markup=kb)
+        b = InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_c")
+        await c.message.answer(f"📦 В категории *{c_name}* пока ничего нет.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[b]]))
         return
-    for p_id, p_name in prods:
-        _, n, d, pr, ph = db.get_product_details(p_id)
-        cap = f"""🔥 *{n}*
+        
+    # Запускаем карусель с самого первого товара (индекс 0)
+    await show_product_carousel(c.message, prods, current_index=0, category_id=c_id)
+
+async def show_product_carousel(message: Message, prods: list, current_index: int, category_id: int):
+    """Функция отрисовки одного товара с кнопками листания"""
+    p_id, _ = prods[current_index]
+    _, n, d, pr, ph = db.get_product_details(p_id)
+    
+    cap = f"""🔥 *{n}*
 
 📝 {d}
 
 💰 *Цена:* {pr} руб."""
-        b1 = InlineKeyboardButton(text="🛍 Добавить в Outfit", callback_data=f"buy_{p_id}")
-        b2 = InlineKeyboardButton(text="↩️ Назад", callback_data="back_c")
-        kb = InlineKeyboardMarkup(inline_keyboard=[[b1], [b2]])
-        await c.message.answer_photo(photo=ph, caption=cap, parse_mode="Markdown", reply_markup=kb)
+
+    nav_buttons = []
+    
+    # Если есть предыдущий товар, добавляем стрелочку влево
+    if current_index > 0:
+        nav_buttons.append(InlineKeyboardButton(text="◀️ Пред.", callback_data=f"page_{category_id}_{current_index - 1}"))
+    
+    # Если есть следующий товар, добавляем стрелочку вправо
+    if current_index < len(prods) - 1:
+        nav_buttons.append(InlineKeyboardButton(text="След. ▶️", callback_data=f"page_{category_id}_{current_index + 1}"))
+
+    b_buy = InlineKeyboardButton(text="🛍 Добавить в Outfit", callback_data=f"buy_{p_id}")
+    b_back = InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_c")
+    
+    # Собираем структуру клавиатуры
+    kb_list = [nav_buttons] if nav_buttons else []
+    kb_list.append([b_buy])
+    kb_list.append([b_back])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
+    
+    # Отправляем карточку товара
+    await message.answer_photo(photo=ph, caption=cap, parse_mode="Markdown", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("page_"))
+async def navigate_carousel(c: CallbackQuery):
+    """Хэндлер, который ловит нажатия стрелочек Назад/Вперед и меняет товар"""
+    _, c_id, new_index = c.data.split("_")
+    c_id, new_index = int(c_id), int(new_index)
+    
+    prods = db.get_products_by_category(c_id)
+    
+    # Удаляем старый товар, чтобы на его месте открыть новый
+    try: await c.message.delete()
+    except: pass
+    
+    await show_product_carousel(c.message, prods, new_index, c_id)
+    await c.answer()
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def add_cart_cb(c: CallbackQuery):
-    p_id = int(c.data.split("_")[1])
+    p_id = int(c.data.split("_"))
     db.add_to_cart(c.from_user.id, p_id)
+    # Показываем красивое всплывающее уведомление-alert
     await c.answer("✅ Добавлено в ваш Outfit!", show_alert=True)
 
 @dp.callback_query(F.data == "view_cart")
@@ -111,7 +157,7 @@ async def view_cart_cb(c: CallbackQuery):
         btn.append([b])
     text += f"""
 💳 *Итого к оплате:* {total} руб."""
-    b_back = InlineKeyboardButton(text="↩️ Назад", callback_data="back_c")
+    b_back = InlineKeyboardButton(text="↩️ Назад в меню", callback_data="back_c")
     b_clear = InlineKeyboardButton(text="🗑 Очистить", callback_data="clear_c")
     btn.append([b_clear, b_back])
     await c.message.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=btn))
@@ -131,9 +177,11 @@ async def clear_cart_cb(c: CallbackQuery):
 
 @dp.callback_query(F.data == "back_c")
 async def back_c(c: CallbackQuery):
+    # Жестко затираем старое сообщение с товаром/корзиной, чтобы не спамить в чате
     try: await c.message.delete()
     except: pass
     await c.message.answer("✨ Выберите категорию товара:", reply_markup=get_main_menu_kb())
+    await c.answer()
 
 # --- АДМИНКА И CRM-МОДУЛИ ---
 
@@ -151,8 +199,6 @@ async def menu_a(c: CallbackQuery):
 async def show_crm_stats(c: CallbackQuery):
     if c.from_user.id != adm: return
     t_users, t_prods, a_carts = db.get_crm_stats()
-    
-    # Исправлено: убрали, так как теперь переменные — это обычные числа, а не кортежи
     text = f"""📊 *Статистика магазина Outfit:*
 
 👥 Всего клиентов в базе: *{t_users}* чел.
@@ -161,7 +207,6 @@ async def show_crm_stats(c: CallbackQuery):
     
     b = InlineKeyboardButton(text="↩️ Меню", callback_data="menu_a")
     await c.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[b]]))
-
 
 @dp.callback_query(F.data == "exit_a")
 async def exit_a(c: CallbackQuery):
@@ -245,7 +290,7 @@ async def del_c(c: CallbackQuery):
     cats = db.get_categories()
     if not cats: return await c.answer("Категорий нет!", show_alert=True)
     btn = [[InlineKeyboardButton(text=f"❌ {c_name}", callback_data=f"dc_{c_id}")] for c_id, c_name in cats]
-    btn.append([InlineKeyboardButton(text="↩️... Меню", callback_data="menu_a")])
+    btn.append([InlineKeyboardButton(text="↩️ Меню", callback_data="menu_a")])
     await c.message.edit_text("🗑 Удалить категорию и все товары в ней?", reply_markup=InlineKeyboardMarkup(inline_keyboard=btn))
 
 @dp.callback_query(F.data.startswith("dc_"))
@@ -264,7 +309,12 @@ async def add_p(c: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.p_cat)
 
 @dp.callback_query(AdminStates.p_cat, F.data.startswith("sc_"))
-async def proc_p_cat(c: CallbackQuery, state: FSMContext):
+async def proc_p_cat(c: CallbackQuery):
+    # Метод перехвачен через middleware состояния FSM
+    pass
+
+@dp.callback_query(F.data.startswith("sc_"))
+async def proc_p_cat_fallback(c: CallbackQuery, state: FSMContext):
     c_id = int(c.data.split("_")[1])
     await state.update_data(c_id=c_id)
     await c.message.answer("✏️ Введите название товара:")
