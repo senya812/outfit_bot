@@ -308,10 +308,17 @@ async def add_p(c: CallbackQuery, state: FSMContext):
     await c.message.answer("📁 Выберите категорию:", reply_markup=InlineKeyboardMarkup(inline_keyboard=btn))
     await state.set_state(AdminStates.p_cat)
 
-@dp.callback_query(AdminStates.p_cat, F.data.startswith("sc_"))
-async def proc_p_cat(c: CallbackQuery):
-    # Метод перехвачен через middleware состояния FSM
-    pass
+@dp.callback_query(AdminStates.p_cat, F.data.startswith("addcat_"))
+async def proc_p_cat(c: CallbackQuery, state: FSMContext):
+    # Извлекаем ID категории из строки типа "addcat_1"
+    c_data = c.data.split("_")
+    c_id = int(c_data)
+    
+    await state.update_data(c_id=c_id)
+    await c.message.answer("✏️ Введите название товара:")
+    await state.set_state(AdminStates.p_name)
+    await c.answer()
+
 
 @dp.callback_query(F.data.startswith("sc_"))
 async def proc_p_cat_fallback(c: CallbackQuery, state: FSMContext):
@@ -345,9 +352,15 @@ async def proc_p_price(m: Message, state: FSMContext):
 async def proc_p_photo(m: Message, state: FSMContext):
     ph = m.photo[-1].file_id
     data = await state.get_data()
+    
+    # Сохраняем товар в базу данных
     db.add_product(data['c_id'], data['n'], data['d'], data['pr'], ph)
-    await m.answer("🎉 Товар успешно добавлен!", reply_markup=get_post_kb())
+    
+    # Очищаем состояние FSM, чтобы бот забыл старые шаги и был готов к новым действиям
     await state.clear()
+    
+    await m.answer("🎉 Товар успешно добавлен!", reply_markup=get_post_kb())
+
 
 @dp.callback_query(F.data == "del_p")
 async def del_p(c: CallbackQuery):
