@@ -130,10 +130,11 @@ async def navigate_carousel(c: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def add_cart_cb(c: CallbackQuery):
-    p_id = int(c.data.split("_"))
+    # Добавили, чтобы взять именно ID товара из списка ['buy', 'ID']
+    p_id = int(c.data.split("_")[1])
     db.add_to_cart(c.from_user.id, p_id)
-    # Показываем красивое всплывающее уведомление-alert
     await c.answer("✅ Добавлено в ваш Outfit!", show_alert=True)
+
 
 @dp.callback_query(F.data == "view_cart")
 async def view_cart_cb(c: CallbackQuery):
@@ -310,14 +311,13 @@ async def add_p(c: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(AdminStates.p_cat, F.data.startswith("addcat_"))
 async def proc_p_cat(c: CallbackQuery, state: FSMContext):
-    # Извлекаем ID категории из строки типа "addcat_1"
-    c_data = c.data.split("_")
-    c_id = int(c_data)
-    
+    # Убедитесь, что здесь тоже указан индекс [1] после split
+    c_id = int(c.data.split("_")[1])
     await state.update_data(c_id=c_id)
     await c.message.answer("✏️ Введите название товара:")
     await state.set_state(AdminStates.p_name)
     await c.answer()
+
 
 
 @dp.callback_query(F.data.startswith("sc_"))
